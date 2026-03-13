@@ -1,0 +1,1540 @@
+/**
+ * AI多世界观社交模拟器 - 完整全栈代码
+ * 包含后端Express服务、SQLite数据库、前端React Native UI
+ * 单文件版本（用于学习和原型开发）
+ * 
+ * 使用方式：
+ * 1. 后端：ts-node complete-app.ts --mode=server
+ * 2. 前端：在React Native项目中导入UI组件
+ */
+
+// ============================================================
+// 第一部分：类型定义
+// ============================================================
+interface CharacterProfile {
+  id: string;
+  name: string;
+  worldview: string;
+  age: number;
+  height: string;
+  body_features: string;
+  appearance: string;
+  clothing_style: string;
+  personality_tags: string[];
+  speaking_style: string;
+  abilities: string[];
+  identity_background: string;
+  relationships: Relationship[];
+  user_experience: string;
+  system_prompt: string;
+  avatar_url: string;
+  is_active: boolean;
+  knowledge_base_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+interface Relationship {
+  target_character_id: string;
+  target_character_name: string;
+  relationship_description: string;
+}
+
+interface ChatWindow {
+  id: string;
+  role_id: string;
+  user_identity_in_this_world: UserIdentityInWorld;
+  messages: ChatMessage[];
+  last_message_time: string;
+  unread_count: number;
+}
+
+interface UserIdentityInWorld {
+  username: string;
+  age?: number;
+  identity: string;
+  relationship_stage: string;
+}
+
+interface ChatMessage {
+  id: string;
+  sender_type: 'user' | 'ai';
+  content: string;
+  timestamp: string;
+  type: 'text' | 'red_packet' | 'transfer' | 'image' | 'voice';
+  metadata?: {
+    amount?: number;
+    blessing_text?: string;
+    transfer_memo?: string;
+    image_url?: string;
+    is_claimed?: boolean;
+  };
+}
+
+interface Moment {
+  id: string;
+  author_id: string;
+  author_name: string;
+  content: string;
+  images: string[];
+  emojis: string[];
+  likes: Like[];
+  comments: Comment[];
+  created_at: string;
+  updated_at: string;
+}
+
+interface Like {
+  id: string;
+  user_id: string;
+  user_name: string;
+  timestamp: string;
+}
+
+interface Comment {
+  id: string;
+  author_id: string;
+  author_name: string;
+  content: string;
+  timestamp: string;
+  replies?: Comment[];
+}
+
+interface ForumPost {
+  id: string;
+  author_id: string;
+  author_name: string;
+  title: string;
+  content: string;
+  images: string[];
+  tags: string[];
+  likes: Like[];
+  replies: ForumReply[];
+  created_at: string;
+  updated_at: string;
+  is_explicit_content: boolean;
+}
+
+interface ForumReply {
+  id: string;
+  author_id: string;
+  author_name: string;
+  content: string;
+  images: string[];
+  likes: Like[];
+  timestamp: string;
+  replies?: ForumReply[];
+}
+
+interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string;
+  files: KBFile[];
+  linked_role_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+interface KBFile {
+  file_id: string;
+  file_name: string;
+  file_size: number;
+  upload_time: string;
+  parse_status: 'pending' | 'completed' | 'failed';
+  chunks: Chunk[];
+  parse_progress: number;
+}
+
+interface Chunk {
+  chunk_id: string;
+  content: string;
+  vector?: number[];
+  metadata: {
+    file_id: string;
+    chunk_index: number;
+    keywords?: string[];
+  };
+}
+
+interface RetrievalResult {
+  chunk_id: string;
+  content: string;
+  similarity_score: number;
+  source_file: string;
+}
+
+interface AIConfig {
+  api_key: string;
+  embedding_api_key: string;
+  model: 'gpt-4o' | 'gpt-4o-mini' | 'gpt-3.5-turbo';
+  temperature: number;
+  max_tokens: number;
+  perplexity: number;
+  burstiness: number;
+  vector_db_type: 'pinecone' | 'chroma';
+  pinecone_api_key?: string;
+  chroma_db_path?: string;
+}
+
+// ============================================================
+// 第二部分：后端 Node.js + Express 实现
+// ============================================================
+
+// 导入必要的库
+const express = require('express');
+const http = require('http');
+const { Server: IOServer } = require('socket.io');
+const cors = require('cors');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const fs = require('fs');
+const uuid = require('uuid');
+
+// ============ 数据库初始化 ============
+class Database {
+  private db: any;
+
+  constructor(dbPath: string) {
+    if (!fs.existsSync(path.dirname(dbPath))) {
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    }
+    this.db = new sqlite3.Database(dbPath);
+    this.initializeSchema();
+  }
+
+  private initializeSchema() {
+    this.db.serialize(() => {
+      // 角色表
+      this.db.run(`CREATE TABLE IF NOT EXISTS characters (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        worldview TEXT,
+        age INTEGER,
+        height TEXT,
+        body_features TEXT,
+        appearance TEXT,
+        clothing_style TEXT,
+        personality_tags TEXT,
+        speaking_style TEXT,
+        abilities TEXT,
+        identity_background TEXT,
+        relationships TEXT,
+        user_experience TEXT,
+        system_prompt TEXT,
+        avatar_url TEXT,
+        is_active BOOLEAN DEFAULT 1,
+        knowledge_base_ids TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      )`);
+
+      // 聊天窗口表
+      this.db.run(`CREATE TABLE IF NOT EXISTS chat_windows (
+        id TEXT PRIMARY KEY,
+        role_id TEXT NOT NULL,
+        user_identity_in_this_world TEXT,
+        last_message_time TEXT,
+        unread_count INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+      )`);
+
+      // 聊天消息表
+      this.db.run(`CREATE TABLE IF NOT EXISTS chat_messages (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        sender_type TEXT,
+        content TEXT,
+        type TEXT,
+        metadata TEXT,
+        timestamp TEXT
+      )`);
+
+      // 朋友圈表
+      this.db.run(`CREATE TABLE IF NOT EXISTS moments (
+        id TEXT PRIMARY KEY,
+        author_id TEXT NOT NULL,
+        author_name TEXT,
+        content TEXT,
+        images TEXT,
+        emojis TEXT,
+        likes TEXT,
+        comments TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      )`);
+
+      // 论坛帖子表
+      this.db.run(`CREATE TABLE IF NOT EXISTS forum_posts (
+        id TEXT PRIMARY KEY,
+        author_id TEXT NOT NULL,
+        author_name TEXT,
+        title TEXT,
+        content TEXT,
+        images TEXT,
+        tags TEXT,
+        likes TEXT,
+        replies TEXT,
+        is_explicit_content BOOLEAN,
+        created_at TEXT,
+        updated_at TEXT
+      )`);
+
+      // 知识库表
+      this.db.run(`CREATE TABLE IF NOT EXISTS knowledge_bases (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        files TEXT,
+        linked_role_ids TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      )`);
+
+      // 设置表
+      this.db.run(`CREATE TABLE IF NOT EXISTS settings (
+        id INTEGER PRIMARY KEY,
+        key TEXT UNIQUE,
+        value TEXT
+      )`);
+
+      console.log('✅ 数据库初始化完成');
+    });
+  }
+
+  run(sql: string, params: any[] = []): Promise<any> {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, function(err: any) {
+        if (err) reject(err);
+        else resolve({ id: this.lastID });
+      });
+    });
+  }
+
+  get(sql: string, params: any[] = []): Promise<any> {
+    return new Promise((resolve, reject) => {
+      this.db.get(sql, params, (err: any, row: any) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  }
+
+  all(sql: string, params: any[] = []): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, (err: any, rows: any[]) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+  }
+
+  close(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.close((err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+}
+
+// ============ 后端服务类 ============
+class BackendService {
+  private app: any;
+  private server: any;
+  private io: any;
+  private db: Database;
+
+  constructor() {
+    this.app = express();
+    this.server = http.createServer(this.app);
+    this.io = new IOServer(this.server, {
+      cors: { origin: '*', methods: ['GET', 'POST'] }
+    });
+    this.db = new Database(path.join(__dirname, 'data', 'app.db'));
+    this.setupMiddleware();
+    this.setupRoutes();
+    this.setupSocket();
+  }
+
+  private setupMiddleware() {
+    this.app.use(cors());
+    this.app.use(express.json({ limit: '50mb' }));
+    this.app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  }
+
+  private setupRoutes() {
+    // ============ 角色API ============
+    this.app.get('/api/characters', async (req: any, res: any) => {
+      try {
+        const characters = await this.db.all('SELECT * FROM characters');
+        const parsed = characters.map((c: any) => ({
+          ...c,
+          personality_tags: JSON.parse(c.personality_tags || '[]'),
+          abilities: JSON.parse(c.abilities || '[]'),
+          relationships: JSON.parse(c.relationships || '[]'),
+          knowledge_base_ids: JSON.parse(c.knowledge_base_ids || '[]'),
+          is_active: Boolean(c.is_active),
+        }));
+        res.json(parsed);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/characters', async (req: any, res: any) => {
+      try {
+        const profile = req.body;
+        profile.id = uuid.v4();
+        profile.created_at = profile.updated_at = new Date().toISOString();
+
+        await this.db.run(
+          `INSERT INTO characters (
+            id, name, worldview, age, height, body_features, appearance, clothing_style,
+            personality_tags, speaking_style, abilities, identity_background, relationships,
+            user_experience, system_prompt, avatar_url, is_active, knowledge_base_ids,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            profile.id, profile.name, profile.worldview, profile.age, profile.height,
+            profile.body_features, profile.appearance, profile.clothing_style,
+            JSON.stringify(profile.personality_tags || []),
+            profile.speaking_style,
+            JSON.stringify(profile.abilities || []),
+            profile.identity_background,
+            JSON.stringify(profile.relationships || []),
+            profile.user_experience,
+            profile.system_prompt,
+            profile.avatar_url,
+            profile.is_active ? 1 : 0,
+            JSON.stringify(profile.knowledge_base_ids || []),
+            profile.created_at,
+            profile.updated_at,
+          ]
+        );
+
+        res.json(profile);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.put('/api/characters/:id', async (req: any, res: any) => {
+      try {
+        const { id } = req.params;
+        const profile = req.body;
+        profile.updated_at = new Date().toISOString();
+
+        await this.db.run(
+          `UPDATE characters SET
+            name = ?, worldview = ?, age = ?, height = ?, body_features = ?, appearance = ?,
+            clothing_style = ?, personality_tags = ?, speaking_style = ?, abilities = ?,
+            identity_background = ?, relationships = ?, user_experience = ?, system_prompt = ?,
+            avatar_url = ?, is_active = ?, knowledge_base_ids = ?, updated_at = ?
+            WHERE id = ?`,
+          [
+            profile.name, profile.worldview, profile.age, profile.height,
+            profile.body_features, profile.appearance, profile.clothing_style,
+            JSON.stringify(profile.personality_tags || []),
+            profile.speaking_style,
+            JSON.stringify(profile.abilities || []),
+            profile.identity_background,
+            JSON.stringify(profile.relationships || []),
+            profile.user_experience,
+            profile.system_prompt,
+            profile.avatar_url,
+            profile.is_active ? 1 : 0,
+            JSON.stringify(profile.knowledge_base_ids || []),
+            profile.updated_at,
+            id,
+          ]
+        );
+
+        res.json(profile);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.delete('/api/characters/:id', async (req: any, res: any) => {
+      try {
+        const { id } = req.params;
+        await this.db.run('DELETE FROM characters WHERE id = ?', [id]);
+        await this.db.run('DELETE FROM chat_windows WHERE role_id = ?', [id]);
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ 聊天API ============
+    this.app.get('/api/chat-windows', async (req: any, res: any) => {
+      try {
+        const windows = await this.db.all('SELECT * FROM chat_windows ORDER BY last_message_time DESC');
+        const parsed = windows.map((w: any) => ({
+          ...w,
+          user_identity_in_this_world: JSON.parse(w.user_identity_in_this_world || '{}'),
+          messages: [],
+        }));
+        res.json(parsed);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/chat-windows', async (req: any, res: any) => {
+      try {
+        const { role_id, user_identity_in_this_world } = req.body;
+        const id = uuid.v4();
+        const now = new Date().toISOString();
+
+        await this.db.run(
+          `INSERT INTO chat_windows (id, role_id, user_identity_in_this_world, last_message_time, unread_count, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [id, role_id, JSON.stringify(user_identity_in_this_world || {}), now, 0, now, now]
+        );
+
+        res.json({ id, role_id, user_identity_in_this_world, messages: [] });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.get('/api/chat-windows/:chatId', async (req: any, res: any) => {
+      try {
+        const { chatId } = req.params;
+        const chatWindow = await this.db.get('SELECT * FROM chat_windows WHERE id = ?', [chatId]);
+        const messages = await this.db.all(
+          'SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY timestamp',
+          [chatId]
+        );
+
+        const parsed = {
+          ...chatWindow,
+          user_identity_in_this_world: JSON.parse(chatWindow?.user_identity_in_this_world || '{}'),
+          messages: messages.map((m: any) => ({
+            ...m,
+            metadata: JSON.parse(m.metadata || '{}'),
+          })),
+        };
+
+        res.json(parsed);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/chat-windows/:chatId/messages', async (req: any, res: any) => {
+      try {
+        const { chatId } = req.params;
+        const { content, type, metadata } = req.body;
+        const id = uuid.v4();
+        const now = new Date().toISOString();
+
+        await this.db.run(
+          `INSERT INTO chat_messages (id, chat_id, sender_type, content, type, metadata, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [id, chatId, 'user', content, type || 'text', JSON.stringify(metadata || {}), now]
+        );
+
+        // 更新最后消息时间
+        await this.db.run(
+          'UPDATE chat_windows SET last_message_time = ? WHERE id = ?',
+          [now, chatId]
+        );
+
+        const message = { id, chat_id: chatId, sender_type: 'user', content, type: type || 'text', metadata, timestamp: now };
+        this.io.emit('chat:message', { chatId, message });
+
+        res.json(message);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/chat-windows/:chatId/red-packet', async (req: any, res: any) => {
+      try {
+        const { chatId } = req.params;
+        const { amount, blessing_text } = req.body;
+        const id = uuid.v4();
+        const now = new Date().toISOString();
+        const metadata = { amount, blessing_text, is_claimed: false };
+
+        await this.db.run(
+          `INSERT INTO chat_messages (id, chat_id, sender_type, content, type, metadata, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [id, chatId, 'user', `发送了红包 ¥${amount}`, 'red_packet', JSON.stringify(metadata), now]
+        );
+
+        await this.db.run(
+          'UPDATE chat_windows SET last_message_time = ? WHERE id = ?',
+          [now, chatId]
+        );
+
+        const message = { id, chat_id: chatId, sender_type: 'user', content: `发送了红包 ¥${amount}`, type: 'red_packet', metadata, timestamp: now };
+        this.io.emit('red_packet:sent', { chatId, message });
+
+        res.json(message);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ 朋友圈API ============
+    this.app.get('/api/moments', async (req: any, res: any) => {
+      try {
+        const moments = await this.db.all('SELECT * FROM moments ORDER BY created_at DESC');
+        const parsed = moments.map((m: any) => ({
+          ...m,
+          images: JSON.parse(m.images || '[]'),
+          emojis: JSON.parse(m.emojis || '[]'),
+          likes: JSON.parse(m.likes || '[]'),
+          comments: JSON.parse(m.comments || '[]'),
+        }));
+        res.json(parsed);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/moments', async (req: any, res: any) => {
+      try {
+        const { author_id, author_name, content, images, emojis } = req.body;
+        const id = uuid.v4();
+        const now = new Date().toISOString();
+
+        await this.db.run(
+          `INSERT INTO moments (id, author_id, author_name, content, images, emojis, likes, comments, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, author_id, author_name, content, JSON.stringify(images || []), JSON.stringify(emojis || []), '[]', '[]', now, now]
+        );
+
+        const moment = { id, author_id, author_name, content, images, emojis, likes: [], comments: [], created_at: now, updated_at: now };
+        this.io.emit('moment:created', moment);
+
+        res.json(moment);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/moments/:momentId/like', async (req: any, res: any) => {
+      try {
+        const { momentId } = req.params;
+        const { user_id, user_name } = req.body;
+        const likeId = uuid.v4();
+        const now = new Date().toISOString();
+
+        const moment = await this.db.get('SELECT * FROM moments WHERE id = ?', [momentId]);
+        const likes = JSON.parse(moment?.likes || '[]');
+        likes.push({ id: likeId, user_id, user_name, timestamp: now });
+
+        await this.db.run(
+          'UPDATE moments SET likes = ?, updated_at = ? WHERE id = ?',
+          [JSON.stringify(likes), now, momentId]
+        );
+
+        this.io.emit('moment:liked', { momentId, like: { id: likeId, user_id, user_name, timestamp: now } });
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/moments/:momentId/comments', async (req: any, res: any) => {
+      try {
+        const { momentId } = req.params;
+        const { author_id, author_name, content } = req.body;
+        const commentId = uuid.v4();
+        const now = new Date().toISOString();
+
+        const moment = await this.db.get('SELECT * FROM moments WHERE id = ?', [momentId]);
+        const comments = JSON.parse(moment?.comments || '[]');
+        comments.push({ id: commentId, author_id, author_name, content, timestamp: now });
+
+        await this.db.run(
+          'UPDATE moments SET comments = ?, updated_at = ? WHERE id = ?',
+          [JSON.stringify(comments), now, momentId]
+        );
+
+        this.io.emit('moment:commented', { momentId, comment: { id: commentId, author_id, author_name, content, timestamp: now } });
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ 论坛API ============
+    this.app.get('/api/forum-posts', async (req: any, res: any) => {
+      try {
+        const posts = await this.db.all('SELECT * FROM forum_posts ORDER BY created_at DESC');
+        const parsed = posts.map((p: any) => ({
+          ...p,
+          images: JSON.parse(p.images || '[]'),
+          tags: JSON.parse(p.tags || '[]'),
+          likes: JSON.parse(p.likes || '[]'),
+          replies: JSON.parse(p.replies || '[]'),
+        }));
+        res.json(parsed);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/forum-posts', async (req: any, res: any) => {
+      try {
+        const { author_id, author_name, title, content, images, tags, is_explicit_content } = req.body;
+        const id = uuid.v4();
+        const now = new Date().toISOString();
+
+        await this.db.run(
+          `INSERT INTO forum_posts (id, author_id, author_name, title, content, images, tags, likes, replies, is_explicit_content, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, author_id, author_name, title, content, JSON.stringify(images || []), JSON.stringify(tags || []), '[]', '[]', is_explicit_content ? 1 : 0, now, now]
+        );
+
+        const post = { id, author_id, author_name, title, content, images, tags, likes: [], replies: [], is_explicit_content, created_at: now, updated_at: now };
+        this.io.emit('forum:post_created', post);
+
+        res.json(post);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/forum-posts/:postId/replies', async (req: any, res: any) => {
+      try {
+        const { postId } = req.params;
+        const { author_id, author_name, content, images } = req.body;
+        const replyId = uuid.v4();
+        const now = new Date().toISOString();
+
+        const post = await this.db.get('SELECT * FROM forum_posts WHERE id = ?', [postId]);
+        const replies = JSON.parse(post?.replies || '[]');
+        replies.push({ id: replyId, author_id, author_name, content, images, likes: [], timestamp: now });
+
+        await this.db.run(
+          'UPDATE forum_posts SET replies = ?, updated_at = ? WHERE id = ?',
+          [JSON.stringify(replies), now, postId]
+        );
+
+        this.io.emit('forum:replied', { postId, reply: { id: replyId, author_id, author_name, content, images, likes: [], timestamp: now } });
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ 知识库API ============
+    this.app.get('/api/knowledge-bases', async (req: any, res: any) => {
+      try {
+        const kbs = await this.db.all('SELECT * FROM knowledge_bases');
+        const parsed = kbs.map((kb: any) => ({
+          ...kb,
+          files: JSON.parse(kb.files || '[]'),
+          linked_role_ids: JSON.parse(kb.linked_role_ids || '[]'),
+        }));
+        res.json(parsed);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.post('/api/knowledge-bases', async (req: any, res: any) => {
+      try {
+        const { name, description } = req.body;
+        const id = uuid.v4();
+        const now = new Date().toISOString();
+
+        await this.db.run(
+          `INSERT INTO knowledge_bases (id, name, description, files, linked_role_ids, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [id, name, description, '[]', '[]', now, now]
+        );
+
+        res.json({ id, name, description, files: [], linked_role_ids: [], created_at: now, updated_at: now });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ 设置API ============
+    this.app.get('/api/settings', async (req: any, res: any) => {
+      try {
+        const rows = await this.db.all('SELECT * FROM settings');
+        const settings: any = {};
+        rows.forEach((row: any) => {
+          try {
+            settings[row.key] = JSON.parse(row.value);
+          } catch {
+            settings[row.key] = row.value;
+          }
+        });
+        res.json(settings);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    this.app.put('/api/settings/:key', async (req: any, res: any) => {
+      try {
+        const { key } = req.params;
+        const value = req.body;
+
+        await this.db.run(
+          'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+          [key, JSON.stringify(value)]
+        );
+
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ 清空数据API ============
+    this.app.post('/api/settings/clear-all-data', async (req: any, res: any) => {
+      try {
+        await this.db.run('DELETE FROM characters');
+        await this.db.run('DELETE FROM chat_windows');
+        await this.db.run('DELETE FROM chat_messages');
+        await this.db.run('DELETE FROM moments');
+        await this.db.run('DELETE FROM forum_posts');
+        await this.db.run('DELETE FROM knowledge_bases');
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+  }
+
+  private setupSocket() {
+    this.io.on('connection', (socket: any) => {
+      console.log(`📱 用户已连接: ${socket.id}`);
+
+      socket.on('chat:join', (data: any) => {
+        socket.join(`chat:${data.chatId}`);
+      });
+
+      socket.on('chat:leave', (data: any) => {
+        socket.leave(`chat:${data.chatId}`);
+      });
+
+      socket.on('chat:message', (data: any) => {
+        this.io.to(`chat:${data.chatId}`).emit('chat:message', data);
+      });
+
+      socket.on('chat:typing', (data: any) => {
+        socket.broadcast.emit('chat:typing', data);
+      });
+
+      socket.on('disconnect', () => {
+        console.log(`📱 用户已断开连接: ${socket.id}`);
+      });
+    });
+  }
+
+  start(port: number = 3000) {
+    this.server.listen(port, () => {
+      console.log(`\n✅ 后端服务已启动`);
+      console.log(`📍 API地址: http://localhost:${port}`);
+      console.log(`📚 数据库: data/app.db\n`);
+    });
+  }
+
+  async shutdown() {
+    await this.db.close();
+    this.server.close();
+  }
+}
+
+// ============================================================
+// 第三部分：前端 React Native UI 组件
+// ============================================================
+
+// 使用这些组件到你的React Native应用中
+const React = require('react');
+const {
+  View, Text, FlatList, TouchableOpacity, TextInput, StyleSheet, Modal,
+  ActivityIndicator, ScrollView, Switch, Image, useColorScheme, Button, Alert
+} = require('react-native');
+const { Ionicons } = require('@expo/vector-icons');
+
+/**
+ * 聊天列表屏幕
+ */
+function ChatListScreen({ navigation }: any) {
+  const [chatWindows, setChatWindows] = React.useState<ChatWindow[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  React.useEffect(() => {
+    fetchChatWindows();
+  }, []);
+
+  const fetchChatWindows = async () => {
+    try {
+      const response = await fetch('http://localhost:3000/api/chat-windows');
+      const data = await response.json();
+      setChatWindows(data);
+    } catch (error) {
+      console.error('获取聊天列表失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderChatItem = ({ item }: { item: ChatWindow }) => (
+    <TouchableOpacity
+      style={[styles.chatItem, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}
+      onPress={() => navigation.navigate('ChatDetail', { chatId: item.id })}
+    >
+      <View style={styles.chatInfo}>
+        <Text style={[styles.characterName, { color: isDark ? '#fff' : '#000' }]} numberOfLines={1}>
+          {item.role_id}
+        </Text>
+        <Text style={[styles.lastMessage, { color: isDark ? '#999' : '#666' }]} numberOfLines={1}>
+          最后消息...
+        </Text>
+      </View>
+      {item.unread_count > 0 && (
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>{item.unread_count}</Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#f5f5f5' }]}>
+      {loading ? (
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color="#007AFF" />
+        </View>
+      ) : (
+        <FlatList
+          data={chatWindows}
+          renderItem={renderChatItem}
+          keyExtractor={(item) => item.id}
+        />
+      )}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => navigation.navigate('CreateChat')}
+      >
+        <Ionicons name="add" size={28} color="#fff" />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+/**
+ * 聊天详情屏幕
+ */
+function ChatDetailScreen({ route, navigation }: any) {
+  const { chatId } = route.params;
+  const [chatWindow, setChatWindow] = React.useState<ChatWindow | null>(null);
+  const [messageText, setMessageText] = React.useState('');
+  const [loading, setLoading] = React.useState(true);
+  const [showRedPacketModal, setShowRedPacketModal] = React.useState(false);
+  const [redPacketAmount, setRedPacketAmount] = React.useState('');
+  const [redPacketBlessing, setRedPacketBlessing] = React.useState('');
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  React.useEffect(() => {
+    fetchChatWindow();
+  }, [chatId]);
+
+  const fetchChatWindow = async () => {
+    try {
+      const response = await fetch(`http://localhost:3000/api/chat-windows/${chatId}`);
+      const data = await response.json();
+      setChatWindow(data);
+    } catch (error) {
+      console.error('获取聊天详情失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!messageText.trim()) return;
+
+    try {
+      const response = await fetch(`http://localhost:3000/api/chat-windows/${chatId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: messageText, type: 'text' })
+      });
+      const message = await response.json();
+
+      // 更新UI
+      if (chatWindow) {
+        setChatWindow({
+          ...chatWindow,
+          messages: [...chatWindow.messages, message]
+        });
+      }
+      setMessageText('');
+    } catch (error) {
+      console.error('发送消息失败:', error);
+      Alert.alert('错误', '发送消息失败');
+    }
+  };
+
+  const handleSendRedPacket = async () => {
+    if (!redPacketAmount.trim()) {
+      Alert.alert('错误', '请输入红包金额');
+      return;
+    }
+
+    try {
+      const response = await fetch(`http://localhost:3000/api/chat-windows/${chatId}/red-packet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: parseFloat(redPacketAmount),
+          blessing_text: redPacketBlessing || '恭喜发财'
+        })
+      });
+      const message = await response.json();
+
+      if (chatWindow) {
+        setChatWindow({
+          ...chatWindow,
+          messages: [...chatWindow.messages, message]
+        });
+      }
+
+      setShowRedPacketModal(false);
+      setRedPacketAmount('');
+      setRedPacketBlessing('');
+      Alert.alert('成功', '红包已发送');
+    } catch (error) {
+      console.error('发送红包失败:', error);
+      Alert.alert('错误', '发送红包失败');
+    }
+  };
+
+  const renderMessage = ({ item }: { item: ChatMessage }) => {
+    const isUserMessage = item.sender_type === 'user';
+
+    if (item.type === 'red_packet') {
+      return (
+        <View style={[styles.messageBubble, isUserMessage ? styles.userBubble : styles.aiBubble]}>
+          <TouchableOpacity style={styles.redPacketBubble}>
+            <Ionicons name="gift" size={32} color="#ff4458" />
+            <Text style={styles.redPacketAmount}>¥{item.metadata?.amount}</Text>
+            <Text style={styles.redPacketBlessing}>{item.metadata?.blessing_text}</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <View style={[styles.messageBubble, isUserMessage ? styles.userBubble : styles.aiBubble]}>
+        <Text style={[styles.messageText, { color: isUserMessage ? '#fff' : isDark ? '#fff' : '#000' }]}>
+          {item.content}
+        </Text>
+      </View>
+    );
+  };
+
+  if (loading || !chatWindow) {
+    return (
+      <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#fff' }]}>
+        <ActivityIndicator size="large" color="#007AFF" />
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#fff' }]}>
+      {/* 头部 */}
+      <View style={[styles.header, { borderBottomColor: isDark ? '#333' : '#f0f0f0' }]}>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Ionicons name="chevron-back" size={24} color={isDark ? '#fff' : '#000'} />
+        </TouchableOpacity>
+        <View style={styles.headerTitle}>
+          <Text style={[styles.title, { color: isDark ? '#fff' : '#000' }]}>
+            {chatWindow.role_id}
+          </Text>
+        </View>
+      </View>
+
+      {/* 消息列表 */}
+      <FlatList
+        data={chatWindow.messages}
+        renderItem={renderMessage}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={{ padding: 10 }}
+      />
+
+      {/* 输入框 */}
+      <View style={[styles.inputContainer, { borderTopColor: isDark ? '#333' : '#f0f0f0' }]}>
+        <TextInput
+          style={[
+            styles.textInput,
+            { color: isDark ? '#fff' : '#000', borderColor: isDark ? '#333' : '#e0e0e0' },
+          ]}
+          placeholder="输入消息..."
+          placeholderTextColor={isDark ? '#666' : '#999'}
+          value={messageText}
+          onChangeText={setMessageText}
+          multiline
+        />
+        {messageText.trim() ? (
+          <TouchableOpacity style={styles.sendButton} onPress={handleSendMessage}>
+            <Ionicons name="send" size={20} color="#fff" />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.sendButton} onPress={() => setShowRedPacketModal(true)}>
+            <Ionicons name="gift" size={20} color="#ff4458" />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* 红包模态框 */}
+      <Modal visible={showRedPacketModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
+            <Text style={[styles.modalTitle, { color: isDark ? '#fff' : '#000' }]}>
+              发红包
+            </Text>
+            <TextInput
+              style={[
+                styles.modalInput,
+                { color: isDark ? '#fff' : '#000', borderColor: isDark ? '#333' : '#e0e0e0' },
+              ]}
+              placeholder="金额"
+              placeholderTextColor={isDark ? '#666' : '#999'}
+              keyboardType="decimal-pad"
+              value={redPacketAmount}
+              onChangeText={setRedPacketAmount}
+            />
+            <TextInput
+              style={[
+                styles.modalInput,
+                { color: isDark ? '#fff' : '#000', borderColor: isDark ? '#333' : '#e0e0e0' },
+              ]}
+              placeholder="祝福语"
+              placeholderTextColor={isDark ? '#666' : '#999'}
+              value={redPacketBlessing}
+              onChangeText={setRedPacketBlessing}
+            />
+            <View style={styles.modalButtons}>
+              <Button title="取消" onPress={() => setShowRedPacketModal(false)} />
+              <Button title="发送" onPress={handleSendRedPacket} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+/**
+ * 角色列表屏幕
+ */
+function CharacterListScreen({ navigation }: any) {
+  const [characters, setCharacters] = React.useState<CharacterProfile[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  React.useEffect(() => {
+    fetchCharacters();
+  }, []);
+
+  const fetchCharacters = async () => {
+    try {
+      const response = await fetch('http://localhost:3000/api/characters');
+      const data = await response.json();
+      setCharacters(data);
+    } catch (error) {
+      console.error('获取角色列表失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderCharacterItem = ({ item }: { item: CharacterProfile }) => (
+    <TouchableOpacity
+      style={[styles.characterCard, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}
+      onPress={() => navigation.navigate('CharacterDetail', { characterId: item.id })}
+    >
+      <Image
+        source={{ uri: item.avatar_url || 'https://via.placeholder.com/80' }}
+        style={styles.characterAvatar}
+      />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.characterName, { color: isDark ? '#fff' : '#000' }]}>
+          {item.name}
+        </Text>
+        <Text style={[styles.characterSubtitle, { color: isDark ? '#999' : '#666' }]}>
+          {item.worldview} · {item.age}岁
+        </Text>
+        <Text style={[styles.characterDescription, { color: isDark ? '#999' : '#666' }]} numberOfLines={2}>
+          {item.personality_tags.join('、')}
+        </Text>
+      </View>
+      {item.is_active ? (
+        <View style={styles.activeStatus} />
+      ) : null}
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#f5f5f5' }]}>
+      {loading ? (
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color="#007AFF" />
+        </View>
+      ) : (
+        <FlatList
+          data={characters}
+          renderItem={renderCharacterItem}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 10 }}
+        />
+      )}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => navigation.navigate('CreateCharacter')}
+      >
+        <Ionicons name="add" size={28} color="#fff" />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+/**
+ * 朋友圈屏幕
+ */
+function MomentsScreen({ navigation }: any) {
+  const [moments, setMoments] = React.useState<Moment[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  React.useEffect(() => {
+    fetchMoments();
+  }, []);
+
+  const fetchMoments = async () => {
+    try {
+      const response = await fetch('http://localhost:3000/api/moments');
+      const data = await response.json();
+      setMoments(data);
+    } catch (error) {
+      console.error('获取朋友圈失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderMoment = ({ item }: { item: Moment }) => (
+    <TouchableOpacity
+      style={[styles.momentCard, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}
+      onPress={() => navigation.navigate('MomentDetail', { momentId: item.id })}
+    >
+      <View style={styles.momentHeader}>
+        <Text style={[styles.momentAuthor, { color: isDark ? '#fff' : '#000' }]}>
+          {item.author_name}
+        </Text>
+      </View>
+      <Text style={[styles.momentContent, { color: isDark ? '#fff' : '#000' }]}>
+        {item.content}
+      </Text>
+      <View style={styles.momentFooter}>
+        <Text style={[styles.momentStat, { color: isDark ? '#999' : '#666' }]}>
+          👍 {item.likes.length} · 💬 {item.comments.length}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#f5f5f5' }]}>
+      {loading ? (
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color="#007AFF" />
+        </View>
+      ) : (
+        <FlatList
+          data={moments}
+          renderItem={renderMoment}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 10 }}
+        />
+      )}
+    </View>
+  );
+}
+
+/**
+ * 论坛屏幕
+ */
+function ForumScreen({ navigation }: any) {
+  const [posts, setPosts] = React.useState<ForumPost[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  React.useEffect(() => {
+    fetchPosts();
+  }, []);
+
+  const fetchPosts = async () => {
+    try {
+      const response = await fetch('http://localhost:3000/api/forum-posts');
+      const data = await response.json();
+      setPosts(data);
+    } catch (error) {
+      console.error('获取论坛帖子失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderPost = ({ item }: { item: ForumPost }) => (
+    <TouchableOpacity
+      style={[styles.forumCard, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}
+      onPress={() => navigation.navigate('ForumPostDetail', { postId: item.id })}
+    >
+      <Text style={[styles.forumTitle, { color: isDark ? '#fff' : '#000' }]}>
+        {item.title}
+      </Text>
+      <Text style={[styles.forumContent, { color: isDark ? '#999' : '#666' }]} numberOfLines={3}>
+        {item.content}
+      </Text>
+      <View style={styles.forumFooter}>
+        <Text style={[styles.forumAuthor, { color: isDark ? '#999' : '#666' }]}>
+          {item.author_name}
+        </Text>
+        <Text style={[styles.forumStat, { color: isDark ? '#999' : '#666' }]}>
+          💬 {item.replies.length}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#f5f5f5' }]}>
+      {loading ? (
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color="#007AFF" />
+        </View>
+      ) : (
+        <FlatList
+          data={posts}
+          renderItem={renderPost}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 10 }}
+        />
+      )}
+    </View>
+  );
+}
+
+/**
+ * 知识库屏幕
+ */
+function KnowledgeBaseScreen({ navigation }: any) {
+  const [kbs, setKbs] = React.useState<KnowledgeBase[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  React.useEffect(() => {
+    fetchKnowledgeBases();
+  }, []);
+
+  const fetchKnowledgeBases = async () => {
+    try {
+      const response = await fetch('http://localhost:3000/api/knowledge-bases');
+      const data = await response.json();
+      setKbs(data);
+    } catch (error) {
+      console.error('获取知识库失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderKB = ({ item }: { item: KnowledgeBase }) => (
+    <TouchableOpacity
+      style={[styles.kbCard, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}
+      onPress={() => navigation.navigate('KnowledgeBaseDetail', { kbId: item.id })}
+    >
+      <Text style={[styles.kbName, { color: isDark ? '#fff' : '#000' }]}>
+        📚 {item.name}
+      </Text>
+      <Text style={[styles.kbDescription, { color: isDark ? '#999' : '#666' }]} numberOfLines={2}>
+        {item.description}
+      </Text>
+      <View style={styles.kbStats}>
+        <Text style={[styles.kbStat, { color: isDark ? '#999' : '#666' }]}>
+          📄 {item.files.length} 个文件
+        </Text>
+        <Text style={[styles.kbStat, { color: isDark ? '#999' : '#666' }]}>
+          🔗 {item.linked_role_ids.length} 个角色
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#f5f5f5' }]}>
+      {loading ? (
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color="#007AFF" />
+        </View>
+      ) : (
+        <FlatList
+          data={kbs}
+          renderItem={renderKB}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 10 }}
+        />
+      )}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => navigation.navigate('CreateKnowledgeBase')}
+      >
+        <Ionicons name="add" size={28} color="#fff" />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+/**
+ * 设置屏幕
+ */
+function SettingsScreen({ navigation }: any) {
+  const [temperature, setTemperature] = React.useState(0.8);
+  const [model, setModel] = React.useState('gpt-4o-mini');
+  const [enableAudit, setEnableAudit] = React.useState(true);
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  const handleSaveSettings = async () => {
+    try {
+      await fetch('http://localhost:3000/api/settings/ai-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ temperature, model })
+      });
+      Alert.alert('成功', '设置已保存');
+    } catch (error) {
+      Alert.alert('错误', '保存设置失败');
+    }
+  };
+
+  return (
+    <ScrollView style={[styles.container, { backgroundColor: isDark ? '#000' : '#f5f5f5' }]}>
+      <View style={[styles.section, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
+        <Text style={[styles.sectionTitle, { color: isDark ? '#fff' : '#000' }]}>
+          🤖 AI配置
+        </Text>
+        <View style={styles.settingItem}>
+          <Text style={[styles.label, { color: isDark ? '#fff' : '#000' }]}>
+            模型: {model}
+          </Text>
+          <View style={styles.modelSelector}>
+            {['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'].map((m) => (
+              <TouchableOpacity
+                key={m}
+                style={[
+                  styles.modelButton,
+                  { backgroundColor: model === m ? '#007AFF' : isDark ? '#333' : '#e0e0e0' },
+                ]}
+                onPress={() => setModel(m)}
+              >
+                <Text style={[styles.modelButtonText, { color: model === m ? '#fff' : isDark ? '#fff' : '#000' }]}>
+                  {m}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+        <View style={styles.settingItem}>
+          <Text style={[styles.label, { color: isDark ? '#fff' : '#000' }]}>
+            温度: {temperature.toFixed(1)}
+          </Text>
+        </View>
+      </View>
+
+      <View style={[styles.section, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
+        <Text style={[styles.sectionTitle, { color: isDark ? '#fff' : '#000' }]}>
+          🛡️ 内容审核
+        </Text>
+        <View style={styles.settingItem}>
+          <View style={styles.labelRow}>
+            <Text style={[styles.label, { color: isDark ? '#fff' : '#000' }]}>启用内容审核</Text>
+            <Switch
+              value={enableAudit}
+              onValueChange={setEnableAudit}
+              trackColor={{ false: '#767577', true: '#81c784' }}
+              thumbColor={enableAudit ? '#4caf50' : '#f4f3f4'}
+            />
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.buttonGroup}>
+        <Button title="保存设置" onPress={handleSaveSettings} />
+      </View>
+    </ScrollView>
+  );
+}
+
+// ============================================================
+// 样式表
+// ============================================================
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  section: { marginVertical: 10, paddingHorizontal: 10, paddingVertical: 12, borderRadius: 8 },
+  sectionTitle: { fontSize: 16, fontWeight: '600', marginBottom: 12 },
+  settingItem: { marginVertical: 10 },
+  label: { fontSize: 14, fontWeight: '500' },
+  labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  value: { fontSize: 14 },
+  modelSelector: { flexDirection: 'row', marginVertical: 8, gap: 8 },
+  modelButton: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  modelButtonText: { fontSize: 12, fontWeight: '500' },
+  buttonGroup: { paddingHorizontal: 10, paddingVertical: 20 },
+
+  // 聊天相关
+  chatItem: { flexDirection: 'row', padding: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0', alignItems: 'center' },
+  chatInfo: { flex: 1 },
+  characterName: { fontSize: 16, fontWeight: '600', marginBottom: 4 },
+  characterSubtitle: { fontSize: 13 },
+  lastMessage: { fontSize: 13, marginBottom: 2 },
+  badge: { backgroundColor: '#ff4458', borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, minWidth: 20, alignItems: 'center' },
+  badgeText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  fab: { position: 'absolute', bottom: 20, right: 20, width: 56, height: 56, borderRadius: 28, backgroundColor: '#007AFF', justifyContent: 'center', alignItems: 'center' },
+
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1 },
+  headerTitle: { flex: 1, alignItems: 'center' },
+  title: { fontSize: 18, fontWeight: '600' },
+  messageBubble: { marginHorizontal: 12, marginVertical: 4, maxWidth: '80%', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 },
+  userBubble: { alignSelf: 'flex-end', backgroundColor: '#007AFF' },
+  aiBubble: { alignSelf: 'flex-start', backgroundColor: '#e0e0e0' },
+  messageText: { fontSize: 15 },
+  redPacketBubble: { alignItems: 'center', paddingVertical: 16 },
+  redPacketAmount: { fontSize: 18, fontWeight: 'bold', color: '#ff4458', marginTop: 8 },
+  redPacketBlessing: { fontSize: 12, color: '#666', marginTop: 4 },
+
+  inputContainer: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 8, paddingVertical: 8, borderTopWidth: 1, gap: 8 },
+  textInput: { flex: 1, borderWidth: 1, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15 },
+  sendButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#007AFF', justifyContent: 'center', alignItems: 'center' },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { borderTopLeftRadius: 20, borderTopRight
